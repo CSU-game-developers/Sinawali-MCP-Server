@@ -1,6 +1,6 @@
 # MCP-USE Agent
 
-This repository contains an implementation of an MCP (Method-Call-Prediction) agent using the Groq LLM API.
+This repository contains an implementation of an MCP (Model-Context-Protocol) agent using the Groq LLM API.
 
 ## Requirements
 
