@@ -1,0 +1,70 @@
+# MCP-USE Agent
+
+This repository contains an implementation of an MCP (Method-Call-Prediction) agent using the Groq LLM API.
+
+## Requirements
+
+- Python 3.11 or higher
+- Groq API key
+
+## Setup Instructions
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/CSU-game-developers/Sinawali-MCP-Server.git
+cd MCP-USE
+```
+
+### 2. Set Up Virtual Environment
+
+Create and activate a virtual environment:
+
+```bash
+# On Windows
+python -m venv venv
+venv\Scripts\activate
+
+# On macOS/Linux
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. Install Dependencies
+
+Install the required packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Environment Variables
+
+Create a `.env` file in the project root directory and add your Groq API key:
+
+```
+GROQ_API_KEY=your_groq_api_key_here
+```
+
+Alternatively, you will be prompted to enter your API key when running the application.
+
+### 5. Configuration
+
+Ensure the `airbnb_mcp.json` configuration file is in the project root directory.
+
+## Usage
+
+Run the agent with:
+
+```bash
+python agent.py
+```
+
+The agent will execute a sample query "Find the best restaurant in San Francisco" by default.
+
+## Troubleshooting
+
+- If you encounter any issues with the Groq API, ensure your API key is correct and has sufficient permissions.
+- Make sure your Python version is 3.11 or higher by running `python --version`.
+- If you encounter dependency issues, try upgrading pip (`pip install --upgrade pip`) before installing requirements.
+
