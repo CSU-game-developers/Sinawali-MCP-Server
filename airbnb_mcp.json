@@ -1,26 +1,8 @@
 {
-  "name": "AirbnbMCP",
-  "version": "1.0",
-  "description": "Airbnb Multi-API Composition Protocol",
-  "apis": [
-    {
-      "name": "search_listings",
-      "description": "Search for listings on Airbnb based on location, dates, and other parameters",
-      "url": "https://airbnb13.p.rapidapi.com/search-location",
-      "method": "GET",
-      "headers": {
-        "X-RapidAPI-Key": "YOUR_RAPIDAPI_KEY",
-        "X-RapidAPI-Host": "airbnb13.p.rapidapi.com"
-      },
-      "query_params": {
-        "location": "required string: The location to search for listings",
-        "checkin": "required string: Check-in date in YYYY-MM-DD format",
-        "checkout": "required string: Check-out date in YYYY-MM-DD format",
-        "adults": "optional integer: Number of adults",
-        "children": "optional integer: Number of children",
-        "infants": "optional integer: Number of infants",
-        "page": "optional integer: Page number for pagination"
-      }
+  "mcpServers": {
+    "memorymesh": {
+      "command": "node", 
+      "args": ["C:\\Users\\Admin\\Documents\\GitHub\\MCP-USE\\memorymesh\\dist\\index.js"]
     }
-  ]
+  }
 }
