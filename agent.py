@@ -50,7 +50,7 @@ async def main():
         try:
             logger.info("Initializing LLM with GROQ")
             llm = ChatGroq(
-                model="llama-3.1-8b-instant",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 temperature=0.0,
                 max_retries=2,
             )
@@ -80,7 +80,7 @@ If you encounter any issues with the tools, still provide a helpful response to 
         
         # Check if user wants to exit immediately
         if user_input.lower() in ["exit", "quit"]:
-            print("Goodbye!")
+            print("Goodbye!")                                         
             return
         
         while True:
