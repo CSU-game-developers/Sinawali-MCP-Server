@@ -50,7 +50,7 @@ async def main():
         try:
             logger.info("Initializing LLM with GROQ")
             llm = ChatGroq(
-                model="llama-3.1-8b-instant",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 temperature=0.0,
                 max_retries=2,
             )
@@ -63,27 +63,89 @@ async def main():
         logger.info("Creating MCP agent")
         agent = MCPAgent(llm=llm, client=client, max_steps=30)
 
-        # Run the query with timeout
-        logger.info("Starting query execution")
-        start_time = time.time()
-        try:
-            logger.info("About to call agent.run()")
-            result = await asyncio.wait_for(
-                agent.run(
-                    "Create a game Scenario for RPG game.",
-                    max_steps=30,
-                ),
-                timeout=100  # 5 minute timeout for the entire operation
-            )
-            logger.info(f"Query completed in {time.time() - start_time:.2f} seconds")
-            print(f"\nResult: {result}")
-        except asyncio.TimeoutError:
-            logger.error("Query execution timed out after 5 minutes")
-            print("\nOperation timed out. Please try again later.")
-        except Exception as e:
-            logger.error(f"Error during query execution: {str(e)}")
-            print(f"\nError: {str(e)}")
+        # Initial system message that defines the assistant's role
+        system_message = """You are a helpful AI assistant managing a knowledge graph for a text-based RPG. 
+You have access to the following tools: add_npc, update_npc, delete_npc, add_location, update_location, delete_location, 
+and other tools for managing the game world. When the user provides input, first process it using your available tools 
+to update the knowledge graph. Then, respond in a way that is appropriate for a text-based RPG. 
+If you encounter any issues with the tools, still provide a helpful response to the user."""
+        
+        # Print welcome message
+        print("\n=== Text-Based RPG Knowledge Graph Assistant ===")
+        print("Type 'exit' or 'quit' to end the session.\n")
 
+        # Get initial user input from terminal
+        print("To begin your RPG adventure, please enter your first command:")
+        user_input = input("You: ")
+        
+        # Check if user wants to exit immediately
+        if user_input.lower() in ["exit", "quit"]:
+            print("Goodbye!")                                         
+            return
+        
+        while True:
+            # Run the query with timeout
+            logger.info(f"Processing user input: {user_input}")
+            start_time = time.time()
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count < max_retries:
+                try:
+                    logger.info(f"Calling agent.run() (attempt {retry_count + 1}/{max_retries})")
+                    # Combine system message with user input to provide context
+                    full_prompt = f"{system_message}\n\nUser: {user_input}"
+                    
+                    try:
+                        # Try to execute with tools
+                        result = await asyncio.wait_for(
+                            agent.run(
+                                full_prompt,
+                                max_steps=30,
+                            ),
+                            timeout=100  # 5 minute timeout for the entire operation
+                        )
+                    except Exception as tool_error:
+                        # If tool usage fails, fallback to raw response
+                        logger.warning(f"Tool execution failed: {str(tool_error)}. Using raw response instead.")
+                        fallback_prompt = f"{system_message}\n\nUser: {user_input}\n\n(Note: Use a direct response without tools since there might be tool execution issues)"
+                        result = await asyncio.wait_for(
+                            llm.invoke(fallback_prompt),
+                            timeout=60
+                        )
+                        result = result.content  # Extract content from ChatMessage
+                    
+                    logger.info(f"Query completed in {time.time() - start_time:.2f} seconds")
+                    print(f"\nAssistant: {result}\n")
+                    break  # Success, exit the retry loop
+                    
+                except asyncio.TimeoutError:
+                    logger.error("Query execution timed out")
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        print("\nOperation timed out after multiple attempts. Please try again with a different request.")
+                    else:
+                        print(f"\nOperation timed out. Retrying... (Attempt {retry_count}/{max_retries})")
+                        time.sleep(1)  # Brief pause before retrying
+                        
+                except Exception as e:
+                    logger.error(f"Error during query execution: {str(e)}")
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        print(f"\nError: {str(e)}")
+                        print("The system encountered multiple errors. Let's try something else.")
+                    else:
+                        print(f"\nEncountered an error. Retrying... (Attempt {retry_count}/{max_retries})")
+                        time.sleep(1)  # Brief pause before retrying
+            
+            # After max retries or successful completion, get next input
+            user_input = input("You: ")
+            
+            # Check if user wants to exit
+            if user_input.lower() in ["exit", "quit"]:
+                print("Thank you for playing! Goodbye.")
+                break
+                
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         print(f"An unexpected error occurred: {str(e)}")
