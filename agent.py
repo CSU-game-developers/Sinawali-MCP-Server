@@ -70,7 +70,7 @@ async def main():
             logger.info("About to call agent.run()")
             result = await asyncio.wait_for(
                 agent.run(
-                    "Find the best restaurant in San Francisco",
+                    "Create a game Scenario for RPG game.",
                     max_steps=30,
                 ),
                 timeout=100  # 5 minute timeout for the entire operation
