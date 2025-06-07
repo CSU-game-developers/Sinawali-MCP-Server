@@ -4,5 +4,9 @@
       "command": "node", 
       "args": ["C:\\Users\\Admin\\Documents\\GitHub\\MCP-USE\\memorymesh\\dist\\index.js"]
     }
+  },
+  "connectionInfo": {
+    "url": "http://localhost:3000",
+    "timeout": 30000
   }
 }
