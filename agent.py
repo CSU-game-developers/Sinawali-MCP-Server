@@ -285,7 +285,14 @@ async def query(request: QueryRequest, agent: MCPAgent = Depends(get_agent)):
 You have access to the following tools: add_npc, update_npc, delete_npc, add_location, update_location, delete_location, 
 and other tools for managing the game world. When the user provides input, first process it using your available tools 
 to update the knowledge graph. Then, respond in a way that is appropriate for a text-based RPG. 
-If you encounter any issues with the tools, still provide a helpful response to the user."""
+
+For each response, follow this format:
+1. First share your "Thought:" process describing your reasoning
+2. Then indicate your "Action:" if you're using any tools
+3. Include any "Observation:" from tool usage
+4. Always end with a "Final Answer:" section that provides your final response to the user
+
+If you encounter any issues with the tools, still provide a helpful response to the user in the Final Answer section."""
         
         # Check connection state before running query
         is_connected, message = await verify_connection()
