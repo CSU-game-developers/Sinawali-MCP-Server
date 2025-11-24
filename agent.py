@@ -7,6 +7,7 @@ import time
 import getpass
 import subprocess
 from typing import Dict, Any, Optional, Tuple
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
@@ -21,11 +22,42 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
+# Global variables to store client and agent
+mcp_client = None
+mcp_agent = None
+mcp_server_process = None  # Track the server process
+connection_state = {"connected": False, "last_checked": 0, "retry_count": 0, "max_retries": 3}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events"""
+    # Startup
+    try:
+        logger.info("Starting up application...")
+        await initialize_agent()
+    except Exception as e:
+        logger.error(f"Failed to initialize agent on startup: {str(e)}")
+        # Don't fail startup, the agent will be initialized on first request
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down application...")
+    global mcp_server_process
+    if mcp_server_process and mcp_server_process.poll() is None:
+        logger.info("Stopping MCP server process...")
+        try:
+            mcp_server_process.terminate()
+            mcp_server_process.wait(timeout=5)
+        except:
+            mcp_server_process.kill()
+
+# Create FastAPI app with lifespan handler
 app = FastAPI(
     title="MCP-USE API",
     description="API for interacting with an MCP agent for text-based RPG knowledge graph management",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Add CORS middleware
@@ -41,16 +73,12 @@ app.add_middleware(
 class QueryRequest(BaseModel):
     query: str
     system_message: Optional[str] = None
+    max_steps: Optional[int] = 3  # Reduced default from 5 to 3 for faster response
+    timeout: Optional[int] = 15  # Reduced default from 30 to 15 seconds
 
 class StatusResponse(BaseModel):
     status: str
     message: str
-
-# Global variables to store client and agent
-mcp_client = None
-mcp_agent = None
-mcp_server_process = None  # Track the server process
-connection_state = {"connected": False, "last_checked": 0, "retry_count": 0, "max_retries": 3}
 
 async def start_mcp_server(server_name: str, server_config: dict) -> Optional[subprocess.Popen]:
     """Start an MCP server process if needed.
@@ -112,51 +140,27 @@ async def verify_connection() -> Tuple[bool, str]:
         return False, "MCP client not initialized"
     
     try:
-        # Check connection by verifying if there are any active sessions
-        active_sessions = mcp_client.get_all_active_sessions()
-        
-        if active_sessions:
-            # If we have active sessions, consider the connection verified
-            for server_name, session in active_sessions.items():
-                # Checking if session object exists, since is_connected might not be available
-                connection_state["connected"] = True
-                connection_state["retry_count"] = 0  # Reset retry counter on success
-                return True, f"Active session found for {server_name}"
-        
-        # No active sessions, try to create one
+        # Quick check: just verify we have server names configured
         server_names = mcp_client.get_server_names()
         if not server_names:
             return False, "No servers configured"
         
-        # Try to create a new session
-        test_server = server_names[0]
-        logger.info(f"Testing connection by creating session for {test_server}")
-        
+        # Check if we have any active sessions (fast check)
         try:
-            # Create session with a shorter timeout
-            test_session = await asyncio.wait_for(
-                mcp_client.create_session(test_server, auto_initialize=True),
-                timeout=10
-            )
-            
-            if test_session is not None:
-                # Success - clean up test session
-                try:
-                    await mcp_client.close_session(test_server)
-                except:
-                    # If closing fails, it's not critical
-                    pass
-                    
+            active_sessions = mcp_client.get_all_active_sessions()
+            if active_sessions:
                 connection_state["connected"] = True
-                connection_state["retry_count"] = 0  # Reset retry counter on success
-                return True, "Connection verified by creating test session"
-            else:
-                connection_state["retry_count"] += 1
-                return False, f"Failed to create test session (attempt {connection_state['retry_count']})"
-                
-        except asyncio.TimeoutError:
-            connection_state["retry_count"] += 1
-            return False, f"Connection timeout (attempt {connection_state['retry_count']})"
+                connection_state["retry_count"] = 0
+                return True, f"Active session found"
+        except Exception as e:
+            logger.debug(f"Could not get active sessions: {e}")
+        
+        # Don't create a test session here - it's too slow
+        # Instead, we'll let the actual query attempt to use the tools
+        # and fall back to direct LLM if it fails
+        connection_state["connected"] = True  # Assume connected for now
+        connection_state["retry_count"] = 0
+        return True, "Server names available (optimistic)"
             
     except Exception as e:
         connection_state["retry_count"] += 1
@@ -229,9 +233,10 @@ async def initialize_agent():
     try:
         logger.info("Initializing LLM with GROQ")
         llm = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="openai/gpt-oss-120b", 
             temperature=0.0,
             max_retries=2,
+            timeout=60,  # Add explicit timeout
         )
         logger.info("LLM initialized successfully")
     except Exception as e:
@@ -240,7 +245,7 @@ async def initialize_agent():
 
     # Create agent with the client
     logger.info("Creating MCP agent")
-    mcp_agent = MCPAgent(llm=llm, client=mcp_client, max_steps=30)
+    mcp_agent = MCPAgent(llm=llm, client=mcp_client, max_steps=3)  # Reduced to 3 for faster responses
     
     return mcp_agent
 
@@ -249,15 +254,6 @@ def get_agent():
     if mcp_agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized yet")
     return mcp_agent
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize agent on startup"""
-    try:
-        await initialize_agent()
-    except Exception as e:
-        logger.error(f"Failed to initialize agent on startup: {str(e)}")
-        # Don't fail startup, the agent will be initialized on first request
 
 @app.get("/health", response_model=StatusResponse)
 async def health_check():
@@ -273,157 +269,189 @@ async def status():
 
 @app.post("/query")
 async def query(request: QueryRequest, agent: MCPAgent = Depends(get_agent)):
-    """Process a query using the MCP agent"""
+    """Process a query using the MCP agent with aggressive timeout protection"""
     try:
         logger.info(f"Processing user input: {request.query}")
         start_time = time.time()
-        max_retries = 3
-        retry_count = 0
+        
+        # Use configurable values from request or defaults
+        max_steps = request.max_steps or 3  # Further reduced from 5 to 3
+        timeout = request.timeout or 15  # Further reduced from 30 to 15 seconds
         
         # Use provided system message or default
         system_message = request.system_message or """You are a helpful AI assistant managing a knowledge graph for a text-based RPG. 
-You have access to the following tools: add_npc, update_npc, delete_npc, add_location, update_location, delete_location, 
-and other tools for managing the game world. When the user provides input, first process it using your available tools 
-to update the knowledge graph. Then, respond in a way that is appropriate for a text-based RPG. 
-
-For each response, follow this format:
-1. First share your "Thought:" process describing your reasoning
-2. Then indicate your "Action:" if you're using any tools
-3. Include any "Observation:" from tool usage
-4. Always end with a "Final Answer:" section that provides your final response to the user
-
-If you encounter any issues with the tools, still provide a helpful response to the user in the Final Answer section."""
+You have access to tools for managing the game world. Process the user's input and respond concisely with a "Final Answer:"."""
         
-        # Check connection state before running query
+        full_prompt = f"{system_message}\n\nUser: {request.query}"
+        
+        # Check connection state before running query (fast check only)
         is_connected, message = await verify_connection()
         connection_warning = ""
-        if not is_connected:
-            connection_warning = f"Warning: MCP connection issue detected ({message}). Falling back to direct LLM responses."
-            logger.warning(connection_warning)
         
-        while retry_count < max_retries:
+        # Try with tools first, but with very aggressive timeout
+        result = None
+        used_fallback = False
+        
+        if is_connected:
             try:
-                logger.info(f"Calling agent.run() (attempt {retry_count + 1}/{max_retries})")
-                full_prompt = f"{system_message}\n\nUser: {request.query}"
-                
-                # Only attempt to use tools if the connection is verified
-                if is_connected:
-                    try:
-                        # Try to execute with tools
-                        result = await asyncio.wait_for(
-                            agent.run(
-                                full_prompt,
-                                max_steps=30,
-                            ),
-                            timeout=100  # 5 minute timeout for the entire operation
-                        )
-                    except Exception as tool_error:
-                        # If tool usage fails, fallback to raw response
-                        error_msg = str(tool_error) if str(tool_error) else "Unknown tool execution error"
-                        logger.warning(f"Tool execution failed: {error_msg}. Using raw response instead.")
-                        fallback_prompt = f"{system_message}\n\nUser: {request.query}\n\n(Note: Use a direct response without tools since there might be tool execution issues: {error_msg})"
-                        response = agent.llm.invoke(fallback_prompt)
-                        result = response.content  # Extract content from ChatMessage
-                else:
-                    # Connection issues - directly use LLM without trying tools
-                    fallback_prompt = f"{system_message}\n\nUser: {request.query}\n\n(Note: Use a direct response without tools since there are MCP connection issues)"
-                    response = agent.llm.invoke(fallback_prompt)
-                    result = response.content  # Extract content from ChatMessage
-                
-                logger.info(f"Query completed in {time.time() - start_time:.2f} seconds")
-                
-                # Parse and structure the response if possible
-                structured_response = {}
-                
-                # Try to extract structured elements from agent's response
-                try:
-                    if isinstance(result, dict) and "steps" in result:
-                        # If agent result already contains structured trace data
-                        thoughts = []
-                        actions = []
-                        observations = []
-                        
-                        # Extract information from steps
-                        for step in result.get("steps", []):
-                            if "thought" in step:
-                                thoughts.append(step["thought"])
-                            if "action" in step:
-                                actions.append(step["action"])
-                            if "observation" in step:
-                                observations.append(step["observation"])
-                        
-                        structured_response = {
-                            "thoughts": thoughts,
-                            "actions": actions,
-                            "observations": observations,
-                            "final_answer": result.get("output", "")
-                        }
-                    elif isinstance(result, str):
-                        # Try to parse from string format with sections like "Thought:", "Action:", etc.
-                        sections = {
-                            "Thought": [],
-                            "Action": [], 
-                            "Observation": [],
-                            "Final Answer": ""
-                        }
-                        
-                        # Simple parsing based on section headers
-                        current_section = None
-                        for line in result.split('\n'):
-                            line = line.strip()
-                            if line.startswith("Thought:"):
-                                current_section = "Thought"
-                                sections["Thought"].append(line[8:].strip())
-                            elif line.startswith("Action:"):
-                                current_section = "Action"
-                                sections["Action"].append(line[7:].strip())
-                            elif line.startswith("Observation:"):
-                                current_section = "Observation"
-                                sections["Observation"].append(line[12:].strip())
-                            elif line.startswith("Final Answer:"):
-                                current_section = "Final Answer"
-                                sections["Final Answer"] = line[13:].strip()
-                            elif current_section and line:
-                                if current_section == "Final Answer":
-                                    sections[current_section] += " " + line
-                                else:
-                                    sections[current_section][-1] += " " + line
-                        
-                        structured_response = sections
-                except Exception as parse_error:
-                    logger.warning(f"Failed to parse structured response: {str(parse_error)}")
-                
-                # Include connection warning in response if applicable
-                response_data = {
-                    "raw_response": result,  # Keep the original response
-                    "structured_response": structured_response,  # Add structured data if available
-                    "processing_time": time.time() - start_time
-                }
-                
-                if connection_warning:
-                    response_data["warning"] = connection_warning
-                    
-                return response_data
+                logger.info(f"Attempting agent.run() with max_steps={max_steps}, timeout={timeout}s")
+                # Wrap in asyncio.wait_for with aggressive timeout
+                result = await asyncio.wait_for(
+                    agent.run(full_prompt, max_steps=max_steps),
+                    timeout=timeout
+                )
+                logger.info(f"Agent.run() completed successfully")
                 
             except asyncio.TimeoutError:
-                logger.error("Query execution timed out")
-                retry_count += 1
-                if retry_count >= max_retries:
-                    raise HTTPException(status_code=504, detail="Operation timed out after multiple attempts")
-                logger.info(f"Retrying after timeout... (Attempt {retry_count}/{max_retries})")
-                await asyncio.sleep(1)  # Brief pause before retrying
+                logger.warning(f"Agent.run() timed out after {timeout}s, falling back to direct LLM")
+                used_fallback = True
+                connection_warning = f"Tool execution timed out. Using direct response."
                 
-            except Exception as e:
-                logger.error(f"Error during query execution: {str(e)}")
-                retry_count += 1
-                if retry_count >= max_retries:
-                    raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
-                logger.info(f"Retrying after error... (Attempt {retry_count}/{max_retries})")
-                await asyncio.sleep(1)  # Brief pause before retrying
+            except Exception as tool_error:
+                error_msg = str(tool_error)[:200]  # Truncate long errors
+                logger.warning(f"Tool execution failed: {error_msg}. Using direct response.")
+                used_fallback = True
+                connection_warning = f"Tool execution failed: {error_msg}"
+        else:
+            logger.warning(f"Connection not verified: {message}. Using direct LLM response.")
+            used_fallback = True
+            connection_warning = f"MCP connection issue: {message}"
+        
+        # If tools failed or timed out, use direct LLM
+        if result is None or used_fallback:
+            try:
+                logger.info("Using direct LLM fallback (no tools)")
+                fallback_prompt = f"{system_message}\n\nUser: {request.query}\n\n(Provide a direct response)"
+                # Give LLM a shorter timeout too
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(agent.llm.invoke, fallback_prompt),
+                    timeout=10
+                )
+                result = response.content
+                logger.info("Direct LLM response completed")
+            except asyncio.TimeoutError:
+                logger.error("Even direct LLM timed out!")
+                raise HTTPException(
+                    status_code=504,
+                    detail="Request timed out. The LLM service may be slow. Try /query-fast instead."
+                )
+        
+        processing_time = time.time() - start_time
+        logger.info(f"Query completed in {processing_time:.2f} seconds")
+        
+        # Parse and structure the response if possible
+        structured_response = {}
+        
+        # Try to extract structured elements from agent's response
+        try:
+            if isinstance(result, dict) and "steps" in result:
+                # If agent result already contains structured trace data
+                thoughts = []
+                actions = []
+                observations = []
+                
+                # Extract information from steps
+                for step in result.get("steps", []):
+                    if "thought" in step:
+                        thoughts.append(step["thought"])
+                    if "action" in step:
+                        actions.append(step["action"])
+                    if "observation" in step:
+                        observations.append(step["observation"])
+                
+                structured_response = {
+                    "thoughts": thoughts,
+                    "actions": actions,
+                    "observations": observations,
+                    "final_answer": result.get("output", "")
+                }
+            elif isinstance(result, str):
+                # Try to parse from string format with sections
+                sections = {
+                    "Thought": [],
+                    "Action": [], 
+                    "Observation": [],
+                    "Final Answer": ""
+                }
+                
+                # Simple parsing based on section headers
+                current_section = None
+                for line in result.split('\n'):
+                    line = line.strip()
+                    if line.startswith("Thought:"):
+                        current_section = "Thought"
+                        sections["Thought"].append(line[8:].strip())
+                    elif line.startswith("Action:"):
+                        current_section = "Action"
+                        sections["Action"].append(line[7:].strip())
+                    elif line.startswith("Observation:"):
+                        current_section = "Observation"
+                        sections["Observation"].append(line[12:].strip())
+                    elif line.startswith("Final Answer:"):
+                        current_section = "Final Answer"
+                        sections["Final Answer"] = line[13:].strip()
+                    elif current_section and line:
+                        if current_section == "Final Answer":
+                            sections[current_section] += " " + line
+                        elif sections[current_section]:
+                            sections[current_section][-1] += " " + line
+                
+                structured_response = sections
+        except Exception as parse_error:
+            logger.warning(f"Failed to parse structured response: {str(parse_error)}")
+        
+        # Build response
+        response_data = {
+            "raw_response": result,
+            "structured_response": structured_response,
+            "processing_time": processing_time,
+            "max_steps_used": max_steps,
+            "timeout_used": timeout,
+            "used_fallback": used_fallback
+        }
+        
+        if connection_warning:
+            response_data["warning"] = connection_warning
+            
+        return response_data
+                
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        logger.error(f"Unexpected error in query endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+
+@app.post("/query-fast")
+async def query_fast(request: QueryRequest, agent: MCPAgent = Depends(get_agent)):
+    """Process a query using direct LLM without tools for faster response"""
+    try:
+        logger.info(f"Processing fast query: {request.query}")
+        start_time = time.time()
+        
+        # Use provided system message or default
+        system_message = request.system_message or """You are a helpful AI assistant for a text-based RPG. 
+Provide quick, concise responses to user queries."""
+        
+        full_prompt = f"{system_message}\n\nUser: {request.query}"
+        
+        # Use direct LLM call without tools
+        response = agent.llm.invoke(full_prompt)
+        result = response.content  # Extract content from ChatMessage
+        
+        processing_time = time.time() - start_time
+        logger.info(f"Fast query completed in {processing_time:.2f} seconds")
+        
+        return {
+            "response": result,
+            "processing_time": processing_time,
+            "mode": "fast"
+        }
                 
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+        logger.error(f"Error during fast query execution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
 @app.post("/check-connection")
 async def check_connection():

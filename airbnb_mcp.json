@@ -2,7 +2,7 @@
   "mcpServers": {
     "memorymesh": {
       "command": "node", 
-      "args": ["C:\\Users\\Admin\\Documents\\GitHub\\MCP-USE\\memorymesh\\dist\\index.js"]
+      "args": ["d:\\github\\Sinawali-MCP-Server\\memorymesh\\dist\\index.js"]
     }
   },
   "connectionInfo": {
